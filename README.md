@@ -14,8 +14,8 @@ PollVerse Explorer is a decentralized polling (voting) dApp built with React, Ty
 
 ## Demo
 
-Check out the live demo on Vercel
-## "vercelplaceholder" ##
+Check out the live demo on [Vercel](https://pollverse-ten.vercel.app/).
+
 
 ## Technologies Used
 
