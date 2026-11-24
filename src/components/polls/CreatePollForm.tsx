@@ -1,7 +1,8 @@
-
-import { useState } from "react";
+import { useId, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { useQueryClient } from "@tanstack/react-query";
 import { useWeb3 } from "@/hooks/useWeb3";
+import { getWeb3ErrorMessage } from "@/lib/web3";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -13,16 +14,25 @@ export function CreatePollForm() {
   const { createPoll } = useWeb3();
   const { toast } = useToast();
   const navigate = useNavigate();
-  
+  const queryClient = useQueryClient();
+
+  const titleErrorId = useId();
+  const optionsErrorId = useId();
+  const titleInputRef = useRef<HTMLInputElement>(null);
+  const optionInputRefs = useRef<(HTMLInputElement | null)[]>([]);
+
   const [title, setTitle] = useState("");
   const [options, setOptions] = useState<string[]>(["", ""]);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [errors, setErrors] = useState<{ title?: string, options?: string }>({});
+  const [errors, setErrors] = useState<{ title?: string; options?: string }>({});
 
   // Add option field
   const addOption = () => {
     if (options.length < 10) {
       setOptions([...options, ""]);
+      if (errors.options) {
+        setErrors((prev) => ({ ...prev, options: undefined }));
+      }
     } else {
       toast({
         title: "Maximum Reached",
@@ -38,6 +48,9 @@ export function CreatePollForm() {
       const newOptions = [...options];
       newOptions.splice(index, 1);
       setOptions(newOptions);
+      if (errors.options) {
+        setErrors((prev) => ({ ...prev, options: undefined }));
+      }
     } else {
       toast({
         title: "Minimum Required",
@@ -52,66 +65,89 @@ export function CreatePollForm() {
     const newOptions = [...options];
     newOptions[index] = value;
     setOptions(newOptions);
+    if (errors.options) {
+      setErrors((prev) => ({ ...prev, options: undefined }));
+    }
   };
 
-  // Validate form
+  // Validate form and focus the first invalid field
   const validateForm = () => {
-    const newErrors: { title?: string, options?: string } = {};
-    
+    const newErrors: { title?: string; options?: string } = {};
+    let firstInvalidOptionIndex = -1;
+
     if (!title.trim()) {
       newErrors.title = "Title is required";
     }
-    
-    // Check for empty options
-    const hasEmptyOption = options.some(option => !option.trim());
-    if (hasEmptyOption) {
+
+    const trimmedOptions = options.map((opt) => opt.trim());
+    const emptyIndex = trimmedOptions.findIndex((opt) => !opt);
+
+    if (emptyIndex !== -1) {
       newErrors.options = "All options must be filled";
+      firstInvalidOptionIndex = emptyIndex;
+    } else {
+      const seen = new Set<string>();
+      const duplicateIndex = trimmedOptions.findIndex((opt) => {
+        const normalized = opt.toLowerCase();
+        if (seen.has(normalized)) return true;
+        seen.add(normalized);
+        return false;
+      });
+      if (duplicateIndex !== -1) {
+        newErrors.options = "Options must be unique";
+        firstInvalidOptionIndex = duplicateIndex;
+      }
     }
-    
-    // Check for duplicate options
-    const uniqueOptions = new Set(options.map(opt => opt.trim()));
-    if (uniqueOptions.size !== options.length) {
-      newErrors.options = "Options must be unique";
-    }
-    
+
     setErrors(newErrors);
+
+    if (newErrors.title) {
+      titleInputRef.current?.focus();
+    } else if (firstInvalidOptionIndex !== -1) {
+      optionInputRefs.current[firstInvalidOptionIndex]?.focus();
+    }
+
     return Object.keys(newErrors).length === 0;
   };
 
   // Handle form submission
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    
+
     if (!validateForm()) {
       return;
     }
-    
+
     try {
       setIsSubmitting(true);
-      
-      const tx = await createPoll(title, options);
-      
+
+      const cleanTitle = title.trim();
+      const cleanOptions = options.map((opt) => opt.trim());
+
+      const tx = await createPoll(cleanTitle, cleanOptions);
+
       toast({
-        title: "Creating Poll",
-        description: "Transaction submitted. Please wait for confirmation.",
+        title: "Transaction Sent",
+        description: "Creating poll. Please wait for confirmation.",
       });
-      
+
       // Wait for transaction confirmation
       await tx.wait();
-      
+
+      await queryClient.invalidateQueries({ queryKey: ["polls"] });
+
       toast({
         title: "Success",
         description: "Poll created successfully!",
       });
-      
+
       // Redirect to polls page after successful creation
       navigate("/");
-      
     } catch (error) {
       console.error("Error creating poll:", error);
       toast({
         title: "Error",
-        description: "Failed to create poll. Please try again.",
+        description: getWeb3ErrorMessage(error, "Failed to create poll. Please try again."),
         variant: "destructive",
       });
     } finally {
@@ -125,30 +161,40 @@ export function CreatePollForm() {
         <ArrowLeft className="h-4 w-4" />
         <span>Back</span>
       </Button>
-      
+
       <Card>
-        <form onSubmit={handleSubmit}>
+        <form onSubmit={handleSubmit} noValidate>
           <CardHeader>
             <CardTitle>Create a New Poll</CardTitle>
             <CardDescription>
               Fill in the details below to create a new poll
             </CardDescription>
           </CardHeader>
-          
+
           <CardContent className="space-y-6">
             <div className="space-y-2">
               <Label htmlFor="title">Poll Title</Label>
               <Input
+                ref={titleInputRef}
                 id="title"
                 value={title}
-                onChange={(e) => setTitle(e.target.value)}
+                onChange={(e) => {
+                  setTitle(e.target.value);
+                  if (errors.title) {
+                    setErrors((prev) => ({ ...prev, title: undefined }));
+                  }
+                }}
                 placeholder="Enter a title for your poll"
+                aria-invalid={errors.title ? "true" : "false"}
+                aria-describedby={errors.title ? titleErrorId : undefined}
               />
               {errors.title && (
-                <p className="text-xs text-destructive mt-1">{errors.title}</p>
+                <p id={titleErrorId} className="text-xs text-destructive mt-1">
+                  {errors.title}
+                </p>
               )}
             </div>
-            
+
             <div className="space-y-4">
               <div className="flex justify-between items-center">
                 <Label>Poll Options</Label>
@@ -156,18 +202,25 @@ export function CreatePollForm() {
                   {options.length}/10 options
                 </span>
               </div>
-              
+
               {options.map((option, index) => (
                 <div key={index} className="flex gap-2">
                   <Input
+                    ref={(el) => {
+                      optionInputRefs.current[index] = el;
+                    }}
                     value={option}
                     onChange={(e) => updateOption(index, e.target.value)}
                     placeholder={`Option ${index + 1}`}
+                    aria-label={`Option ${index + 1}`}
+                    aria-invalid={errors.options ? "true" : "false"}
+                    aria-describedby={errors.options ? optionsErrorId : undefined}
                   />
                   <Button
                     type="button"
                     variant="outline"
                     size="icon"
+                    aria-label={`Remove option ${index + 1}`}
                     onClick={() => removeOption(index)}
                     disabled={options.length <= 2}
                   >
@@ -175,11 +228,13 @@ export function CreatePollForm() {
                   </Button>
                 </div>
               ))}
-              
+
               {errors.options && (
-                <p className="text-xs text-destructive">{errors.options}</p>
+                <p id={optionsErrorId} className="text-xs text-destructive">
+                  {errors.options}
+                </p>
               )}
-              
+
               <Button
                 type="button"
                 variant="outline"
@@ -192,7 +247,7 @@ export function CreatePollForm() {
               </Button>
             </div>
           </CardContent>
-          
+
           <CardFooter className="border-t pt-6">
             <Button
               type="submit"

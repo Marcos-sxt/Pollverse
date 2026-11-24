@@ -1,48 +1,59 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { PollCard } from "./PollCard";
-import { Poll } from "@/lib/web3";
+import { Poll, getWeb3ErrorMessage } from "@/lib/web3";
 import { useWeb3 } from "@/hooks/useWeb3";
 import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Label } from "@/components/ui/label";
-import { Search } from "lucide-react";
+import { Search, RefreshCw } from "lucide-react";
 
 export function PollList() {
-  const { getAllPolls, getPoll } = useWeb3();
+  const { getAllPolls, getPoll, isConnected, isWrongNetwork, chainId } = useWeb3();
   const [searchTerm, setSearchTerm] = useState("");
   const [filter, setFilter] = useState("all");
 
-  // Use React Query to fetch and cache polls with a stable key and function
-  const { data: polls, isLoading } = useQuery<Poll[]>({
-    queryKey: ["polls"],
+  // Fetch and cache polls once connected to the right network
+  const {
+    data: polls,
+    isLoading,
+    isError,
+    error,
+    refetch,
+    isFetching,
+  } = useQuery<Poll[]>({
+    queryKey: ["polls", chainId],
     queryFn: async () => {
       const pollsData = await getAllPolls();
       const detailedPolls = await Promise.all(
         pollsData.map(async (poll) => {
           try {
             return await getPoll(poll.id);
-          } catch (error) {
-            console.error(`Error fetching details for poll ${poll.id}:`, error);
-            return poll; // Return basic poll if fetching details fails
+          } catch (err) {
+            console.error(`Error fetching details for poll ${poll.id}:`, err);
+            return poll;
           }
         })
       );
       return detailedPolls;
     },
-    staleTime: 1 * 60 * 1000, // Cache data for 1 minutes
+    enabled: isConnected && !isWrongNetwork,
+    staleTime: 1 * 60 * 1000,
+    retry: 1,
   });
 
   // Filter polls based on search term and active status
-  const filteredPolls = polls?.filter((poll) => {
-    const matchesTerm = poll.title.toLowerCase().includes(searchTerm.toLowerCase());
-    if (filter === "active") {
-      return matchesTerm && poll.active;
-    } else if (filter === "ended") {
-      return matchesTerm && !poll.active;
-    }
-    return matchesTerm;
-  }) || [];
+  const filteredPolls =
+    polls?.filter((poll) => {
+      const matchesTerm = poll.title.toLowerCase().includes(searchTerm.toLowerCase());
+      if (filter === "active") {
+        return matchesTerm && poll.active;
+      } else if (filter === "ended") {
+        return matchesTerm && !poll.active;
+      }
+      return matchesTerm;
+    }) || [];
 
   return (
     <div className="space-y-6">
@@ -64,8 +75,8 @@ export function PollList() {
 
         <div className="space-y-2">
           <Label>Filter by Status</Label>
-          <RadioGroup 
-            defaultValue="all" 
+          <RadioGroup
+            defaultValue="all"
             className="flex gap-4"
             value={filter}
             onValueChange={setFilter}
@@ -89,11 +100,29 @@ export function PollList() {
       {isLoading ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {[...Array(6)].map((_, index) => (
-            <div 
-              key={index} 
+            <div
+              key={index}
               className="h-[200px] rounded-lg bg-muted animate-pulse-slow"
             />
           ))}
+        </div>
+      ) : isError ? (
+        <div className="text-center py-12 space-y-4">
+          <div>
+            <h3 className="text-lg font-medium text-destructive">Failed to load polls</h3>
+            <p className="text-muted-foreground mt-1 text-sm">
+              {getWeb3ErrorMessage(error, "Could not fetch polls from the Sepolia contract.")}
+            </p>
+          </div>
+          <Button
+            variant="outline"
+            onClick={() => refetch()}
+            disabled={isFetching}
+            className="gap-2"
+          >
+            <RefreshCw className={`h-4 w-4 ${isFetching ? "animate-spin" : ""}`} />
+            <span>Try Again</span>
+          </Button>
         </div>
       ) : filteredPolls.length > 0 ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -105,7 +134,7 @@ export function PollList() {
         <div className="text-center py-12">
           <h3 className="text-lg font-medium">No polls found</h3>
           <p className="text-muted-foreground mt-1">
-            {searchTerm || filter !== "all" 
+            {searchTerm || filter !== "all"
               ? "Try adjusting your search or filter"
               : "Create your first poll to get started"}
           </p>

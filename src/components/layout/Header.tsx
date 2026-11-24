@@ -1,11 +1,18 @@
-
 import { Button } from "@/components/ui/button";
 import { useWeb3 } from "@/hooks/useWeb3";
 import { Link } from "react-router-dom";
-import { WalletIcon, PlusIcon, BarChart } from "lucide-react";
+import { WalletIcon, PlusIcon, BarChart, AlertTriangle } from "lucide-react";
 
 export function Header() {
-  const { isConnected, account, connect, disconnect, isLoading } = useWeb3();
+  const {
+    isConnected,
+    account,
+    isWrongNetwork,
+    connect,
+    disconnect,
+    switchToSepolia,
+    isLoading,
+  } = useWeb3();
 
   const truncateAddress = (address: string) => {
     return `${address.substring(0, 6)}...${address.substring(address.length - 4)}`;
@@ -30,9 +37,21 @@ export function Header() {
           </Link>
         </nav>
 
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-2 sm:gap-4">
           {isConnected ? (
-            <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2 sm:gap-4">
+              {isWrongNetwork && (
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  onClick={switchToSepolia}
+                  disabled={isLoading}
+                  className="gap-1.5"
+                >
+                  <AlertTriangle className="h-3.5 w-3.5" />
+                  <span className="hidden sm:inline">Switch to Sepolia</span>
+                </Button>
+              )}
               <span className="text-sm hidden md:block">
                 {account && truncateAddress(account)}
               </span>
@@ -41,21 +60,21 @@ export function Header() {
               </Button>
             </div>
           ) : (
-            <Button 
-              onClick={connect} 
-              disabled={isLoading} 
-              size="sm" 
+            <Button
+              onClick={connect}
+              disabled={isLoading}
+              size="sm"
               className="gap-2"
             >
               <WalletIcon className="h-4 w-4" />
               <span>{isLoading ? "Connecting..." : "Connect Wallet"}</span>
             </Button>
           )}
-          
-          <Link to="/create">
-            <Button size="sm" className="hidden md:flex gap-2">
+
+          <Link to="/create" aria-label="Create Poll">
+            <Button size="sm" className="gap-2">
               <PlusIcon className="h-4 w-4" />
-              <span>Create Poll</span>
+              <span className="hidden sm:inline">Create Poll</span>
             </Button>
           </Link>
         </div>

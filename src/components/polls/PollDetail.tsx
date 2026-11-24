@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
-import { Poll } from "@/lib/web3";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Poll, getWeb3ErrorMessage } from "@/lib/web3";
 import { useWeb3 } from "@/hooks/useWeb3";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
@@ -10,31 +10,65 @@ import { useToast } from "@/hooks/use-toast";
 import { ArrowLeft, Lock, Unlock } from "lucide-react";
 import { Progress } from "@/components/ui/progress";
 
+function getVotedStorageKey(account: string | null): string | null {
+  return account ? `votedPolls:${account.toLowerCase()}` : null;
+}
+
+function readVotedPolls(account: string | null): number[] {
+  const key = getVotedStorageKey(account);
+  if (!key) return [];
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((v): v is number => typeof v === "number") : [];
+  } catch {
+    return [];
+  }
+}
+
+function recordVotedPoll(account: string | null, pollId: number): void {
+  const key = getVotedStorageKey(account);
+  if (!key) return;
+  try {
+    const existing = new Set(readVotedPolls(account));
+    existing.add(pollId);
+    localStorage.setItem(key, JSON.stringify([...existing]));
+  } catch {
+    // Ignore storage quota or private mode errors
+  }
+}
+
 export function PollDetail() {
   const { id } = useParams<{ id: string }>();
-  const pollId = parseInt(id || "0");
+  const pollId = Number(id);
+  const isValidPollId = Number.isInteger(pollId) && pollId > 0;
   const navigate = useNavigate();
-  const { getPoll, vote, endPoll, account } = useWeb3();
+  const queryClient = useQueryClient();
+  const { getPoll, vote, endPoll, account, isConnected, isWrongNetwork, chainId } = useWeb3();
   const { toast } = useToast();
 
-  // Additional state variables to manage voting and ending actions
   const [voting, setVoting] = useState(false);
   const [ending, setEnding] = useState(false);
+  const [hasVoted, setHasVoted] = useState(false);
 
-  // Use React Query to fetch poll data
+  useEffect(() => {
+    if (!isValidPollId || !account) {
+      setHasVoted(false);
+      return;
+    }
+    setHasVoted(readVotedPolls(account).includes(pollId));
+  }, [account, pollId, isValidPollId]);
+
   const { data: poll, isLoading, refetch } = useQuery<Poll>({
-    queryKey: ["poll", pollId],
-    queryFn: async () => {
-      const fetchedPoll = await getPoll(pollId);
-      return fetchedPoll;
-    },
-    staleTime: 5 * 60 * 1000, // cache for 5 minutes
+    queryKey: ["poll", pollId, chainId],
+    queryFn: async () => getPoll(pollId),
+    enabled: isConnected && !isWrongNetwork && isValidPollId,
+    staleTime: 5 * 60 * 1000,
+    retry: 1,
   });
 
-  // Derived values: total votes and checking if user has voted (from localStorage)
   const totalVotes = poll ? poll.optionVotes.reduce((sum, votes) => sum + votes, 0) : 0;
-  const votedPolls = JSON.parse(localStorage.getItem("votedPolls") || "[]");
-  const hasVoted = poll ? votedPolls.includes(pollId) : false;
 
   // Handle voting
   const handleVote = async (optionIndex: number) => {
@@ -43,6 +77,12 @@ export function PollDetail() {
     try {
       setVoting(true);
       const tx = await vote(pollId, optionIndex);
+
+      toast({
+        title: "Transaction Sent",
+        description: "Submitting vote. Please wait for confirmation.",
+      });
+
       await tx.wait();
 
       toast({
@@ -50,17 +90,26 @@ export function PollDetail() {
         description: "Your vote has been recorded successfully!",
       });
 
-      // Save pollId as voted in localStorage
-      const updatedVotedPolls = [...votedPolls, pollId];
-      localStorage.setItem("votedPolls", JSON.stringify(updatedVotedPolls));
+      recordVotedPoll(account, pollId);
+      setHasVoted(true);
 
-      // Refetch poll data to update vote counts
-      await refetch();
+      await Promise.all([
+        refetch(),
+        queryClient.invalidateQueries({ queryKey: ["polls"] }),
+      ]);
     } catch (error) {
       console.error("Error voting:", error);
+      const message = getWeb3ErrorMessage(error, "There was an error submitting your vote");
+
+      // Sync local state if the contract confirms this address already voted
+      if (/already voted/i.test(message)) {
+        recordVotedPoll(account, pollId);
+        setHasVoted(true);
+      }
+
       toast({
         title: "Voting Failed",
-        description: "There was an error submitting your vote",
+        description: message,
         variant: "destructive",
       });
     } finally {
@@ -75,6 +124,12 @@ export function PollDetail() {
     try {
       setEnding(true);
       const tx = await endPoll(pollId);
+
+      toast({
+        title: "Transaction Sent",
+        description: "Ending poll. Please wait for confirmation.",
+      });
+
       await tx.wait();
 
       toast({
@@ -82,13 +137,15 @@ export function PollDetail() {
         description: "The poll has been closed successfully!",
       });
 
-      // Refetch poll data to update poll status
-      await refetch();
+      await Promise.all([
+        refetch(),
+        queryClient.invalidateQueries({ queryKey: ["polls"] }),
+      ]);
     } catch (error) {
       console.error("Error ending poll:", error);
       toast({
         title: "Action Failed",
-        description: "There was an error ending the poll",
+        description: getWeb3ErrorMessage(error, "There was an error ending the poll"),
         variant: "destructive",
       });
     } finally {
@@ -112,7 +169,7 @@ export function PollDetail() {
     );
   }
 
-  if (!poll) {
+  if (!isValidPollId || !poll) {
     return (
       <div className="space-y-4">
         <Button variant="ghost" onClick={() => navigate(-1)} className="gap-1">
@@ -123,7 +180,7 @@ export function PollDetail() {
           <CardHeader>
             <CardTitle>Poll Not Found</CardTitle>
             <CardDescription>
-              The poll you're looking for doesn't exist or has been removed.
+              The poll you&apos;re looking for doesn&apos;t exist or has been removed.
             </CardDescription>
           </CardHeader>
           <CardFooter>
@@ -182,7 +239,7 @@ export function PollDetail() {
                         <div className="flex justify-between text-sm">
                           <span>{option}</span>
                           <span>
-                            {voteCount} votes ({percentage.toFixed(1)}%)
+                            {voteCount} {voteCount === 1 ? "vote" : "votes"} ({percentage.toFixed(1)}%)
                           </span>
                         </div>
                         <Progress value={percentage} className="h-2" />

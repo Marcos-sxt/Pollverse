@@ -1,6 +1,4 @@
-
 import { Header } from "./Header";
-import { Toaster } from "@/components/ui/toaster";
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -23,7 +21,6 @@ export function Layout({ children }: LayoutProps) {
           </p>
         </div>
       </footer>
-      <Toaster />
     </div>
   );
 }
